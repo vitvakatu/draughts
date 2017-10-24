@@ -10,6 +10,7 @@ struct Piece {
     sprite: three::Sprite,
     position: [i32; 2],
     color: Color,
+    selected: bool,
 }
 
 fn create_desk(window: &mut three::Window) -> Vec<three::Sprite> {
@@ -63,6 +64,7 @@ fn place_pieces(window: &mut three::Window) -> Vec<Piece> {
                 sprite,
                 color,
                 position: [0; 2],
+                selected: false,
             };
             pieces.push(piece);
         }
@@ -82,7 +84,7 @@ fn in_borders(scene: &three::Scene, aspect: f32, piece: &mut Piece, pos: [f32; 2
 }
 
 fn main() {
-    let mut window = three::Window::builder("Draughts").dimensions(640, 480).build();
+    let mut window = three::Window::builder("Draughts").dimensions(640, 480).multisampling(4).build();
     let camera = window.factory.orthographic_camera([0.0, 0.0], 1.0, -10.0 .. 10.0);
     window.scene.background = three::Background::Color(0xFFFFFF);
     let _desk = create_desk(&mut window);
@@ -94,14 +96,34 @@ fn main() {
     hl_sprite.set_scale(1.0 / 8.5);
     hl_sprite.set_visible(false);
 
+    let sl = window.factory.load_texture("data/sprites/selection.png");
+    let mut sl_sprite = window.factory.sprite(three::material::Sprite { map: sl });
+    sl_sprite.set_parent(&window.scene);
+    sl_sprite.set_scale(1.0 / 8.5);
+    sl_sprite.set_visible(false);
+
     while window.update() {
         let mut highlight = false;
+        let mut selected = false;
         let mut hightlight_position: [f32; 3] = [0.0; 3];
+        let mut selection_position: [f32; 3] = [0.0; 3];
+        if window.input.hit(three::MOUSE_LEFT) {
+            for piece in &mut pieces {
+                piece.selected = false;
+            }
+        }
         for piece in &mut pieces {
             let pos: [f32; 2] = window.input.mouse_pos_ndc().into();
-            if in_borders(&window.scene, window.renderer.get_aspect(), piece, pos) {
+            if in_borders(&window.scene, window.renderer.get_aspect(), piece, pos) && !piece.selected {
                 highlight = true;
                 hightlight_position = piece.sprite.sync(&window.scene).world_transform.position.into();
+                if window.input.hit(three::MOUSE_LEFT) {
+                    piece.selected = true;
+                }
+            }
+            if piece.selected {
+                selected = true;
+                selection_position = piece.sprite.sync(&window.scene).world_transform.position.into();
             }
         }
         if highlight {
@@ -109,6 +131,13 @@ fn main() {
             hl_sprite.set_position(hightlight_position);
         } else {
             hl_sprite.set_visible(false);
+        }
+
+        if selected {
+            sl_sprite.set_visible(true);
+            sl_sprite.set_position(selection_position);
+        } else {
+            sl_sprite.set_visible(false);
         }
         window.render(&camera);
     }
