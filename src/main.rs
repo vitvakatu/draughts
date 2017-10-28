@@ -1,4 +1,11 @@
+#[macro_use]
+extern crate euler;
+extern crate ndarray;
+#[macro_use]
 extern crate three;
+
+const WIDTH: usize = 8;
+const HEIGHT: usize = 8;
 
 #[derive(Copy, Clone, Debug, PartialEq)]
 enum Color {
@@ -6,139 +13,202 @@ enum Color {
     Black,
 }
 
+#[derive(Copy, Clone, Debug, PartialEq)]
+enum Side {
+    Player,
+    Enemy,
+}
+
+#[derive(Clone, Debug)]
 struct Piece {
     sprite: three::Sprite,
-    position: [i32; 2],
+    position: euler::Vec2,
     color: Color,
+    hovered: bool,
     selected: bool,
+    side: Side,
 }
 
-fn create_desk(window: &mut three::Window) -> Vec<three::Sprite> {
-    let white_cell = window.factory.load_texture("data/sprites/white_cell.png");
-    let black_cell = window.factory.load_texture("data/sprites/black_cell.png");
-    let mut sprites = Vec::new();
-    for i in 0..8 {
-        for j in 0..8 {
-            let cell = if (i + j) % 2 == 0 {
-                white_cell.clone()
-            } else {
-                black_cell.clone()
-            };
-            let mut sprite = window.factory.sprite(three::material::Sprite { map: cell });
-            sprite.set_scale(1.0 / 8.0);
-            sprite.set_parent(&window.scene);
-            sprite.set_position([-1.0 + 1.0 / 8.0 + i as f32 * 0.25, 1.0 - 1.0 / 8.0 - j as f32 * 0.25, 0.0]);
-            sprites.push(sprite);
+impl Piece {
+    fn new(
+        factory: &mut three::Factory,
+        color: Color,
+    ) -> Self {
+        let (sprite_path, side) = match color {
+            Color::White => ("data/sprites/white_piece.png", Side::Player),
+            Color::Black => ("data/sprites/black_piece.png", Side::Enemy),
+        };
+        Self {
+            sprite: load_sprite(factory, sprite_path),
+            position: vec2!(0, 0),
+            color,
+            hovered: false,
+            selected: false,
+            side,
         }
     }
-    sprites
 }
 
-fn place_pieces(window: &mut three::Window) -> Vec<Piece> {
-    let white_piece = window.factory.load_texture("data/sprites/white_piece.png");
-    let black_piece = window.factory.load_texture("data/sprites/black_piece.png");
-    let mut pieces = Vec::new();
-    let mut color = Color::White;
-    for i in 0..8 {
-        for j in 0..8 {
+#[derive(Clone, Debug)]
+struct Cell {
+    sprite: three::Sprite,
+}
+
+impl Cell {
+    fn new(
+        factory: &mut three::Factory,
+        color: Color,
+    ) -> Self {
+        let sprite_path = match color {
+            Color::White => "data/sprites/white_cell.png",
+            Color::Black => "data/sprites/black_cell.png",
+        };
+        Self {
+            sprite: load_sprite(factory, sprite_path),
+        }
+    }
+}
+
+three_object_wrapper!(Piece::sprite, Cell::sprite);
+
+#[inline]
+fn load_sprite(
+    factory: &mut three::Factory,
+    path: &str,
+) -> three::Sprite {
+    let texture = factory.load_texture(path);
+    factory.sprite(three::material::Sprite { map: texture })
+}
+
+struct Board {
+    cells: ndarray::Array2<Cell>,
+    pieces: ndarray::Array2<Option<Piece>>,
+}
+
+#[inline]
+fn to_world(
+    x: usize,
+    y: usize,
+) -> (f32, f32) {
+    let x_world = -1.0 + x as f32 * 2.0 / WIDTH as f32;
+    let y_world = 1.0 - y as f32 * 2.0 / HEIGHT as f32;
+    (x_world, y_world)
+}
+
+impl Board {
+    fn new(
+        factory: &mut three::Factory,
+        scene: &three::Scene,
+    ) -> Self {
+        let mut cells = ndarray::Array2::from_shape_fn((WIDTH, HEIGHT), |(i, j)| {
+            let color = if (i + j) % 2 == 0 {
+                Color::White
+            } else {
+                Color::Black
+            };
+            let mut cell = Cell::new(factory, color);
+            let size = 1.0 / HEIGHT as f32;
+            cell.set_scale(size);
+            let (mut x, mut y) = to_world(i, j);
+            x += size;
+            y -= size;
+            cell.set_position(vec3!(x, y, 0.0));
+            cell.set_parent(&scene);
+            cell
+        });
+        let mut pieces = ndarray::Array2::from_shape_fn((WIDTH, HEIGHT), |(i, j)| {
+            let color = if j < 3 {
+                Color::Black
+            } else if j >= 5 {
+                Color::White
+            } else {
+                return None;
+            };
             if (i + j) % 2 == 0 {
-                continue;
+                return None;
             }
-            let cell = if j >= 5 {
-                color = Color::White;
-                white_piece.clone()
-            } else if j <= 2 {
-                color = Color::Black;
-                black_piece.clone()
-            } else {
-                continue;
-            };
-            let mut sprite = window.factory.sprite(three::material::Sprite { map: cell });
-            sprite.set_scale(1.0 / 8.5);
-            sprite.set_parent(&window.scene);
-            sprite.set_position([
-                -1.0 + 1.0 / 8.0 + i as f32 * 0.25,
-                1.0 - 1.0 / 8.0 - j as f32 * 0.25,
-                0.0]);
-            let piece = Piece {
-                sprite,
-                color,
-                position: [0; 2],
-                selected: false,
-            };
-            pieces.push(piece);
-        }
+            let mut piece = Piece::new(factory, color);
+            let size = 1.0 / HEIGHT as f32;
+            piece.set_scale(size * 0.9);
+            let (mut x, mut y) = to_world(i, j);
+            x += size;
+            y -= size;
+            piece.set_position(vec3!(x, y, 0.0));
+            piece.set_parent(&scene);
+            Some(piece)
+        });
+        Self { cells, pieces }
     }
-    pieces
 }
 
-fn in_borders(scene: &three::Scene, aspect: f32, piece: &mut Piece, pos: [f32; 2]) -> bool {
+fn in_borders(
+    scene: &three::Scene,
+    aspect: f32,
+    piece: &mut Piece,
+    pos: euler::Vec2,
+) -> bool {
     let info = piece.sprite.sync(scene);
-    let mut piece_pos: [f32; 3] = info.world_transform.position.into();
-    piece_pos[0] /= aspect;
+    let mut piece_pos: euler::Vec3 = info.world_transform.position.into();
+    piece_pos.x /= aspect;
     let piece_size: f32 = info.world_transform.scale;
-    pos[0] < piece_pos[0] + piece_size &&
-        pos[0] > piece_pos[0] - piece_size &&
-        pos[1] > piece_pos[1] - piece_size &&
-        pos[1] < piece_pos[1] + piece_size
+    pos.x < piece_pos.x + piece_size && pos.x > piece_pos.x - piece_size && pos.y > piece_pos.y - piece_size && pos.y < piece_pos.y + piece_size
 }
 
 fn main() {
-    let mut window = three::Window::builder("Draughts").dimensions(640, 480).multisampling(4).build();
-    let camera = window.factory.orthographic_camera([0.0, 0.0], 1.0, -10.0 .. 10.0);
+    let mut window = three::Window::builder("Draughts")
+        .dimensions(640, 480)
+        .build();
+    let camera = window
+        .factory
+        .orthographic_camera([0.0, 0.0], 1.0, -10.0 .. 10.0);
     window.scene.background = three::Background::Color(0xFFFFFF);
-    let _desk = create_desk(&mut window);
-    let mut pieces = place_pieces(&mut window);
+    let mut board = Board::new(&mut window.factory, &window.scene);
 
-    let hl = window.factory.load_texture("data/sprites/highlighting.png");
-    let mut hl_sprite = window.factory.sprite(three::material::Sprite { map: hl });
-    hl_sprite.set_parent(&window.scene);
-    hl_sprite.set_scale(1.0 / 8.5);
-    hl_sprite.set_visible(false);
-
-    let sl = window.factory.load_texture("data/sprites/selection.png");
-    let mut sl_sprite = window.factory.sprite(three::material::Sprite { map: sl });
-    sl_sprite.set_parent(&window.scene);
-    sl_sprite.set_scale(1.0 / 8.5);
-    sl_sprite.set_visible(false);
+    let mut hover_sprite = load_sprite(&mut window.factory, "data/sprites/highlighting.png");
+    let mut select_sprite = load_sprite(&mut window.factory, "data/sprites/selection.png");
 
     while window.update() {
-        let mut highlight = false;
-        let mut selected = false;
-        let mut hightlight_position: [f32; 3] = [0.0; 3];
-        let mut selection_position: [f32; 3] = [0.0; 3];
-        if window.input.hit(three::MOUSE_LEFT) {
-            for piece in &mut pieces {
-                piece.selected = false;
-            }
-        }
-        for piece in &mut pieces {
-            let pos: [f32; 2] = window.input.mouse_pos_ndc().into();
-            if in_borders(&window.scene, window.renderer.get_aspect(), piece, pos) && !piece.selected {
-                highlight = true;
-                hightlight_position = piece.sprite.sync(&window.scene).world_transform.position.into();
+        let aspect = window.renderer.get_aspect();
+
+        hover_sprite.set_visible(false);
+        select_sprite.set_visible(false);
+
+        // reset state
+        for mut piece in &mut board.pieces {
+            if let Some(ref mut piece) = *piece {
+                piece.hovered = false;
                 if window.input.hit(three::MOUSE_LEFT) {
-                    piece.selected = true;
+                    piece.selected = false;
                 }
             }
-            if piece.selected {
-                selected = true;
-                selection_position = piece.sprite.sync(&window.scene).world_transform.position.into();
-            }
-        }
-        if highlight {
-            hl_sprite.set_visible(true);
-            hl_sprite.set_position(hightlight_position);
-        } else {
-            hl_sprite.set_visible(false);
         }
 
-        if selected {
-            sl_sprite.set_visible(true);
-            sl_sprite.set_position(selection_position);
-        } else {
-            sl_sprite.set_visible(false);
+        // update state
+        let mouse_pos: euler::Vec2 = window.input.mouse_pos_ndc().into();
+        for mut piece in &mut board.pieces {
+            if let Some(ref mut piece) = *piece {
+                if in_borders(&window.scene, aspect, piece, mouse_pos) && piece.side == Side::Player {
+                    piece.hovered = true;
+                    if window.input.hit(three::MOUSE_LEFT) {
+                        piece.selected = true;
+                    }
+                }
+            }
         }
+
+        // render state
+        for piece in &board.pieces {
+            if let Some(ref piece) = *piece {
+                if piece.hovered && !piece.selected {
+                    hover_sprite.set_parent(piece);
+                    hover_sprite.set_visible(true);
+                } else if piece.selected {
+                    select_sprite.set_parent(piece);
+                    select_sprite.set_visible(true);
+                }
+            }
+        }
+
         window.render(&camera);
     }
 }
